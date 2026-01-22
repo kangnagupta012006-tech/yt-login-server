@@ -1,0 +1,95 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Admin Dashboard</title>
+  <style>
+    body{background:#0f0f0f;color:#fff;font-family:Arial;margin:0;padding:30px;}
+    h1{margin:0 0 20px;}
+    .top{display:flex;justify-content:space-between;align-items:center;}
+    a{color:#ffcc00;text-decoration:none;font-weight:bold;}
+    table{width:100%;border-collapse:collapse;margin-top:10px;background:#151515;border-radius:10px;overflow:hidden;}
+    th,td{padding:12px;border-bottom:1px solid #222;text-align:left;font-size:14px;}
+    th{background:#1f1f1f;}
+    .btn{padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;}
+    .danger{background:#ff4d4d;color:#fff;}
+    .warn{background:#ffcc00;color:#000;}
+    .ok{background:#00c853;color:#fff;}
+    .card{background:#151515;padding:15px;border-radius:12px;margin-bottom:20px;}
+  </style>
+</head>
+<body>
+
+<div class="top">
+  <h1>Admin Dashboard</h1>
+  <a href="/admin/logout">Logout</a>
+</div>
+
+<div class="card">
+  <h2>Active Devices (Max {{max_devices}})</h2>
+  <table>
+    <tr>
+      <th>ID</th>
+      <th>Device ID</th>
+      <th>Device Name</th>
+      <th>IP</th>
+      <th>Created</th>
+      <th>Last Seen</th>
+      <th>Status</th>
+      <th>Action</th>
+    </tr>
+
+    {% for d in devices %}
+    <tr>
+      <td>{{d.id}}</td>
+      <td>{{d.device_id}}</td>
+      <td>{{d.device_name}}</td>
+      <td>{{d.ip}}</td>
+      <td>{{d.created}}</td>
+      <td>{{d.last_seen}}</td>
+      <td>{% if d.disabled %}DISABLED{% else %}ACTIVE{% endif %}</td>
+      <td style="display:flex;gap:8px;">
+        {% if d.disabled %}
+        <form method="post" action="/admin/device/enable/{{d.device_id}}">
+          <button class="btn ok">Enable</button>
+        </form>
+        {% else %}
+        <form method="post" action="/admin/device/disable/{{d.device_id}}">
+          <button class="btn warn">Disable</button>
+        </form>
+        {% endif %}
+
+        <form method="post" action="/admin/device/remove/{{d.device_id}}">
+          <button class="btn danger">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>Recent Logs (Last 50)</h2>
+  <table>
+    <tr>
+      <th>Device ID</th>
+      <th>Name</th>
+      <th>IP</th>
+      <th>Status</th>
+      <th>Time</th>
+    </tr>
+
+    {% for l in logs %}
+    <tr>
+      <td>{{l.device_id}}</td>
+      <td>{{l.name}}</td>
+      <td>{{l.ip}}</td>
+      <td>{{l.status}}</td>
+      <td>{{l.time}}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+</body>
+</html>

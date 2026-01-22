@@ -1,0 +1,25 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Admin Login</title>
+  <style>
+    body{background:#111;color:#fff;font-family:Arial;margin:0;display:flex;justify-content:center;align-items:center;height:100vh;}
+    .box{width:420px;background:#1b1b1b;padding:25px;border-radius:12px;box-shadow:0 0 25px rgba(0,0,0,.6);}
+    input{width:100%;padding:12px;margin-top:10px;border-radius:8px;border:1px solid #333;background:#0f0f0f;color:#fff;}
+    button{width:100%;padding:12px;margin-top:15px;border:none;border-radius:8px;background:#ffcc00;font-weight:bold;cursor:pointer;}
+    .err{color:#ff5a5a;margin-top:10px;}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>Admin Login</h2>
+    <form method="post">
+      <input name="username" placeholder="Admin Username" required>
+      <input name="password" type="password" placeholder="Admin Password" required>
+      <button type="submit">Login</button>
+      {% if error %}<div class="err">{{error}}</div>{% endif %}
+    </form>
+  </div>
+</body>
+</html>
