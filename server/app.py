@@ -18,7 +18,7 @@ MAX_DEVICES = int(os.environ.get("MAX_DEVICES", "5"))
 # 🔥 Google Script Config
 GOOGLE_SCRIPT_URL = os.environ.get(
     "GOOGLE_SCRIPT_URL", 
-    "https://script.google.com/macros/s/AKfycbyiLRy-PQ2JEOHGK5LtKlRpe6xhE-3Up1LHeEbzX9kykfnJhOqjzFGWexFmpNaimEH28Q/exec"
+    "https://script.google.com/macros/s/AKfycbwLERqgEuJiClqtjuwV3oSx700xVad1_QMKbm3WOgnZ5frsPKWYtopcX1cWEfV2YnKHlQ/exec"
 ).strip()
 SHEET_NAME = os.environ.get("SHEET_NAME", "work_report").strip()
 
@@ -327,3 +327,4 @@ def health():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
+
