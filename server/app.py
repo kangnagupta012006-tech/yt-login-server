@@ -15,10 +15,12 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "Mkloveinfinite@#")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "Mkundefined@#")
 MAX_DEVICES = int(os.environ.get("MAX_DEVICES", "5"))
 
-GOOGLE_SHEET_WEBHOOK = os.environ.get(
-    "GOOGLE_SHEET_WEBHOOK",
+# 🔥 Google Script Config
+GOOGLE_SCRIPT_URL = os.environ.get(
+    "GOOGLE_SCRIPT_URL", 
     "https://script.google.com/macros/s/AKfycbyiLRy-PQ2JEOHGK5LtKlRpe6xhE-3Up1LHeEbzX9kykfnJhOqjzFGWexFmpNaimEH28Q/exec"
-)
+).strip()
+SHEET_NAME = os.environ.get("SHEET_NAME", "work_report").strip()
 
 DATA_FILE = "data.json"
 
@@ -65,26 +67,51 @@ def find_device(db, device_id):
     return None
 
 # ---------------- HELPERS: GOOGLE SHEET & LINKS ----------------
-YT_REGEX = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/\S+", re.IGNORECASE)
 
-def only_youtube_links(items):
-    clean = []
-    if not isinstance(items, list):
-        return clean
+YT_REGEX = re.compile(r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s]+)', re.IGNORECASE)
+
+def extract_youtube_links(items):
+    links = []
     for x in items:
-        x = str(x).strip()
-        if YT_REGEX.search(x):
-            clean.append(x)
-    return clean
+        if not isinstance(x, str):
+            continue
+        # Find all youtube links in the string
+        found = YT_REGEX.findall(x)
+        for f in found:
+            links.append(f.strip())
+    
+    # Return unique links but keep order
+    unique = []
+    for l in links:
+        if l not in unique:
+            unique.append(l)
+    return unique
 
-def push_to_google_sheet(payload: dict):
+def push_to_google_sheet(row: dict):
+    """
+    row keys expected:
+    time, username, device_id, device_name, ip, event, count, details
+    """
+    if not GOOGLE_SCRIPT_URL:
+        return {"ok": False, "error": "GOOGLE_SCRIPT_URL missing"}
+
+    payload = {
+        "sheet": SHEET_NAME,
+        "time": row.get("time", ""),
+        "username": row.get("username", ""),
+        "device_id": row.get("device_id", ""),
+        "device_name": row.get("device_name", ""),
+        "ip": row.get("ip", ""),
+        "event": row.get("event", ""),
+        "count": row.get("count", ""),
+        "details": row.get("details", ""),
+    }
+
     try:
-        # Sends data to the Google Apps Script Webhook
-        r = requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
-        return (r.status_code == 200)
+        r = requests.post(GOOGLE_SCRIPT_URL, json=payload, timeout=10)
+        return {"ok": r.status_code == 200, "status": r.status_code, "text": r.text[:200]}
     except Exception as e:
-        print(f"Webhook Error: {e}")
-        return False
+        return {"ok": False, "error": str(e)}
 
 # ---------------- API: LOGIN & PING ----------------
 
@@ -156,82 +183,86 @@ def api_ping():
         "time": now_str()
     }), 200
 
-# ---------------- API: REPORT TO GOOGLE SHEET ----------------
+# ---------------- API: GOOGLE SHEET REPORTING ----------------
 
 @app.route("/api/report/paste_links", methods=["POST"])
 def report_paste_links():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
 
     username = data.get("username", "")
     device_id = data.get("device_id", "")
     device_name = data.get("device_name", "")
     items = data.get("items", [])
 
-    yt_links = only_youtube_links(items)
+    yt_links = extract_youtube_links(items)
 
-    payload = {
+    row = {
         "time": now_str(),
         "username": username,
         "device_id": device_id,
         "device_name": device_name,
-        "event": "PASTE_LINKS",
+        "ip": request.remote_addr,
+        "event": "paste_links",
         "count": len(yt_links),
-        "details": "\n".join(yt_links)
+        "details": "\n".join(yt_links[:20])  # limit (sheet clean)
     }
 
-    ok = push_to_google_sheet(payload)
-    return jsonify({"ok": ok, "accepted": len(yt_links)}), 200
+    result = push_to_google_sheet(row)
+    return jsonify({"ok": True, "saved_links": len(yt_links), "sheet_result": result})
 
 @app.route("/api/report/scrape_done", methods=["POST"])
 def report_scrape_done():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
 
-    payload = {
+    row = {
         "time": now_str(),
         "username": data.get("username", ""),
         "device_id": data.get("device_id", ""),
         "device_name": data.get("device_name", ""),
-        "event": "SCRAPE_DONE",
+        "ip": request.remote_addr,
+        "event": "scrape_done",
         "count": int(data.get("count", 0)),
         "details": ""
     }
 
-    ok = push_to_google_sheet(payload)
-    return jsonify({"ok": ok}), 200
+    result = push_to_google_sheet(row)
+    return jsonify({"ok": True, "sheet_result": result})
 
 @app.route("/api/report/download_done", methods=["POST"])
 def report_download_done():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
 
-    payload = {
+    row = {
         "time": now_str(),
         "username": data.get("username", ""),
         "device_id": data.get("device_id", ""),
         "device_name": data.get("device_name", ""),
-        "event": "DOWNLOAD_DONE",
+        "ip": request.remote_addr,
+        "event": "download_done",
         "count": int(data.get("count", 0)),
         "details": ""
     }
 
-    ok = push_to_google_sheet(payload)
-    return jsonify({"ok": ok}), 200
+    result = push_to_google_sheet(row)
+    return jsonify({"ok": True, "sheet_result": result})
 
 @app.route("/api/report/session", methods=["POST"])
 def report_session():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
 
-    payload = {
+    row = {
         "time": now_str(),
         "username": data.get("username", ""),
         "device_id": data.get("device_id", ""),
         "device_name": data.get("device_name", ""),
-        "event": "SESSION_SECONDS",
+        "ip": request.remote_addr,
+        "event": "session",
         "count": int(data.get("seconds", 0)),
         "details": ""
     }
 
-    ok = push_to_google_sheet(payload)
-    return jsonify({"ok": ok}), 200
+    result = push_to_google_sheet(row)
+    return jsonify({"ok": True, "sheet_result": result})
 
 # ---------------- ADMIN PANEL ----------------
 
