@@ -3,9 +3,9 @@ import json
 import time
 import hashlib
 import re
+import requests
 from datetime import datetime
-from openpyxl import Workbook, load_workbook
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_file
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "CHANGE_THIS_SECRET")
@@ -15,8 +15,12 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "Mkloveinfinite@#")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "Mkundefined@#")
 MAX_DEVICES = int(os.environ.get("MAX_DEVICES", "5"))
 
+GOOGLE_SHEET_WEBHOOK = os.environ.get(
+    "GOOGLE_SHEET_WEBHOOK",
+    "https://script.google.com/macros/s/AKfycbyiLRy-PQ2JEOHGK5LtKlRpe6xhE-3Up1LHeEbzX9kykfnJhOqjzFGWexFmpNaimEH28Q/exec"
+)
+
 DATA_FILE = "data.json"
-REPORT_FILE = "work_report.xlsx"
 
 # ---------------- HELPERS: GENERAL ----------------
 def now_str():
@@ -60,48 +64,27 @@ def find_device(db, device_id):
             return d
     return None
 
-# ---------------- HELPERS: REPORT & EXCEL (NEW) ----------------
-YOUTUBE_REGEX = re.compile(
-    r"(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[A-Za-z0-9_\-]{6,}"
-)
+# ---------------- HELPERS: GOOGLE SHEET & LINKS ----------------
+YT_REGEX = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/\S+", re.IGNORECASE)
 
-def is_valid_youtube_link(text: str) -> bool:
-    if not text:
-        return False
-    return bool(YOUTUBE_REGEX.search(text.strip()))
+def only_youtube_links(items):
+    clean = []
+    if not isinstance(items, list):
+        return clean
+    for x in items:
+        x = str(x).strip()
+        if YT_REGEX.search(x):
+            clean.append(x)
+    return clean
 
-def ensure_excel_file():
-    if os.path.exists(REPORT_FILE):
-        return
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "report"
-
-    # Header Row
-    ws.append([
-        "time_utc",
-        "username",
-        "device_id",
-        "device_name",
-        "event",
-        "valid_links",
-        "invalid_text",
-        "scrape_done",
-        "download_done",
-        "seconds"
-    ])
-    wb.save(REPORT_FILE)
-
-def append_report_row(row: list):
-    ensure_excel_file()
+def push_to_google_sheet(payload: dict):
     try:
-        wb = load_workbook(REPORT_FILE)
-        ws = wb["report"]
-        ws.append(row)
-        wb.save(REPORT_FILE)
+        # Sends data to the Google Apps Script Webhook
+        r = requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
+        return (r.status_code == 200)
     except Exception as e:
-        print(f"Error saving to Excel: {e}")
+        print(f"Webhook Error: {e}")
+        return False
 
 # ---------------- API: LOGIN & PING ----------------
 
@@ -173,7 +156,7 @@ def api_ping():
         "time": now_str()
     }), 200
 
-# ---------------- API: REPORTING (LOG TO EXCEL) ----------------
+# ---------------- API: REPORT TO GOOGLE SHEET ----------------
 
 @app.route("/api/report/paste_links", methods=["POST"])
 def report_paste_links():
@@ -181,101 +164,74 @@ def report_paste_links():
 
     username = data.get("username", "")
     device_id = data.get("device_id", "")
-    device_name = data.get("device_name", "Unknown")
+    device_name = data.get("device_name", "")
     items = data.get("items", [])
 
-    valid_count = 0
-    invalid_count = 0
+    yt_links = only_youtube_links(items)
 
-    for x in items:
-        if is_valid_youtube_link(str(x)):
-            valid_count += 1
-        else:
-            invalid_count += 1
+    payload = {
+        "time": now_str(),
+        "username": username,
+        "device_id": device_id,
+        "device_name": device_name,
+        "event": "PASTE_LINKS",
+        "count": len(yt_links),
+        "details": "\n".join(yt_links)
+    }
 
-    append_report_row([
-        now_str(),
-        username,
-        device_id,
-        device_name,
-        "paste_links",
-        valid_count,
-        invalid_count,
-        "",
-        "",
-        ""
-    ])
-
-    return jsonify({"ok": True, "valid": valid_count, "invalid": invalid_count}), 200
+    ok = push_to_google_sheet(payload)
+    return jsonify({"ok": ok, "accepted": len(yt_links)}), 200
 
 @app.route("/api/report/scrape_done", methods=["POST"])
 def report_scrape_done():
     data = request.get_json(force=True)
-    username = data.get("username", "")
-    device_id = data.get("device_id", "")
-    device_name = data.get("device_name", "Unknown")
-    count = int(data.get("count", 0))
 
-    append_report_row([
-        now_str(),
-        username,
-        device_id,
-        device_name,
-        "scrape_done",
-        "",
-        "",
-        count,
-        "",
-        ""
-    ])
+    payload = {
+        "time": now_str(),
+        "username": data.get("username", ""),
+        "device_id": data.get("device_id", ""),
+        "device_name": data.get("device_name", ""),
+        "event": "SCRAPE_DONE",
+        "count": int(data.get("count", 0)),
+        "details": ""
+    }
 
-    return jsonify({"ok": True}), 200
+    ok = push_to_google_sheet(payload)
+    return jsonify({"ok": ok}), 200
 
 @app.route("/api/report/download_done", methods=["POST"])
 def report_download_done():
     data = request.get_json(force=True)
-    username = data.get("username", "")
-    device_id = data.get("device_id", "")
-    device_name = data.get("device_name", "Unknown")
-    count = int(data.get("count", 0))
 
-    append_report_row([
-        now_str(),
-        username,
-        device_id,
-        device_name,
-        "download_done",
-        "",
-        "",
-        "",
-        count,
-        ""
-    ])
+    payload = {
+        "time": now_str(),
+        "username": data.get("username", ""),
+        "device_id": data.get("device_id", ""),
+        "device_name": data.get("device_name", ""),
+        "event": "DOWNLOAD_DONE",
+        "count": int(data.get("count", 0)),
+        "details": ""
+    }
 
-    return jsonify({"ok": True}), 200
+    ok = push_to_google_sheet(payload)
+    return jsonify({"ok": ok}), 200
 
 @app.route("/api/report/session", methods=["POST"])
 def report_session():
     data = request.get_json(force=True)
-    username = data.get("username", "")
-    device_id = data.get("device_id", "")
-    device_name = data.get("device_name", "Unknown")
-    seconds = int(data.get("seconds", 0))
 
-    append_report_row([
-        now_str(),
-        username,
-        device_id,
-        device_name,
-        "session_time",
-        "",
-        "",
-        "",
-        "",
-        seconds
-    ])
+    payload = {
+        "time": now_str(),
+        "username": data.get("username", ""),
+        "device_id": data.get("device_id", ""),
+        "device_name": data.get("device_name", ""),
+        "event": "SESSION_SECONDS",
+        "count": int(data.get("seconds", 0)),
+        "details": ""
+    }
 
-    return jsonify({"ok": True}), 200
+    ok = push_to_google_sheet(payload)
+    return jsonify({"ok": ok}), 200
 
 # ---------------- ADMIN PANEL ----------------
 
@@ -332,14 +288,6 @@ def enable_device(device_id):
         d["disabled"] = False
     save_db(db)
     return redirect(url_for("home"))
-
-@app.route("/admin/work/excel")
-def download_excel():
-    if not session.get("admin"):
-        return redirect(url_for("admin_login"))
-
-    ensure_excel_file()
-    return send_file(REPORT_FILE, as_attachment=True)
 
 # health check for Render
 @app.route("/health")
