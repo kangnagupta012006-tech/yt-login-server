@@ -2,8 +2,10 @@ import os
 import json
 import time
 import hashlib
+import re
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session
+from openpyxl import Workbook
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_file
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "CHANGE_THIS_SECRET")
@@ -14,20 +16,102 @@ ADMIN_PASS = os.environ.get("ADMIN_PASS", "Mkundefined@#")
 MAX_DEVICES = int(os.environ.get("MAX_DEVICES", "5"))
 
 DATA_FILE = "data.json"
+EXCEL_FILE = "work_report.xlsx"
 
 # ---------------- HELPERS ----------------
 def now_str():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
+def is_youtube_url(text: str) -> bool:
+    if not text:
+        return False
+    text = text.strip()
+    patterns = [
+        r"^https?://(www\.)?youtube\.com/watch\?v=",
+        r"^https?://(www\.)?youtube\.com/shorts/",
+        r"^https?://(www\.)?youtube\.com/playlist\?list=",
+        r"^https?://youtu\.be/"
+    ]
+    return any(re.match(p, text) for p in patterns)
+
+def clean_youtube_url(text: str) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    # remove extra spaces/newlines
+    text = text.replace("\n", "").replace("\r", "")
+    return text
+
+def ensure_report_structure(db):
+    if "work" not in db:
+        db["work"] = {}
+
+def get_user_report(db, username):
+    ensure_report_structure(db)
+    if username not in db["work"]:
+        db["work"][username] = {
+            "username": username,
+            "total_pasted": 0,
+            "valid_yt_links": 0,
+            "scraped_done": 0,
+            "download_done": 0,
+            "last_yt_link": "",
+            "session_seconds": 0,
+            "last_update": now_str()
+        }
+    return db["work"][username]
+
+def export_work_excel(db):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Work Report"
+
+    ws.append([
+        "Username",
+        "Total Pasted",
+        "Valid YT Links",
+        "Scraped Done",
+        "Download Done",
+        "Session Seconds",
+        "Last YT Link",
+        "Last Update"
+    ])
+
+    ensure_report_structure(db)
+
+    for username, r in db["work"].items():
+        ws.append([
+            r.get("username", ""),
+            r.get("total_pasted", 0),
+            r.get("valid_yt_links", 0),
+            r.get("scraped_done", 0),
+            r.get("download_done", 0),
+            r.get("session_seconds", 0),
+            r.get("last_yt_link", ""),
+            r.get("last_update", "")
+        ])
+
+    wb.save(EXCEL_FILE)
+
 def load_db():
     if not os.path.exists(DATA_FILE):
-        return {"devices": [], "logs": []}
+        return {"devices": [], "logs": [], "work": {}}
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+        # Ensure 'work' key exists in old dbs
+        if "work" not in data:
+            data["work"] = {}
+        return data
 
 def save_db(db):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2)
+    
+    # Auto update Excel on every save
+    try:
+        export_work_excel(db)
+    except Exception as e:
+        print(f"Error saving Excel: {e}")
 
 def hash_pw(pw: str):
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
@@ -58,7 +142,7 @@ def find_device(db, device_id):
             return d
     return None
 
-# ---------------- API SECTION ----------------
+# ---------------- API: CLIENT LOGIN & PING ----------------
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
@@ -120,7 +204,6 @@ def api_login():
     save_db(db)
     return jsonify({"ok": True, "max_devices": MAX_DEVICES})
 
-# --- NEW ADDED CODE START ---
 @app.route("/api/ping", methods=["GET"])
 def api_ping():
     return jsonify({
@@ -128,7 +211,87 @@ def api_ping():
         "message": "pong",
         "time": now_str()
     }), 200
-# --- NEW ADDED CODE END ---
+
+# ---------------- API: REPORTING (NEW) ----------------
+
+@app.route("/api/report/link", methods=["POST"])
+def api_report_link():
+    data = request.get_json(force=True)
+
+    username = data.get("username", "").strip()
+    raw_text = data.get("text", "")
+
+    if not username:
+        return jsonify({"ok": False, "error": "username missing"}), 400
+
+    db = load_db()
+    report = get_user_report(db, username)
+
+    report["total_pasted"] += 1
+
+    yt = clean_youtube_url(raw_text)
+    if is_youtube_url(yt):
+        report["valid_yt_links"] += 1
+        report["last_yt_link"] = yt
+
+    report["last_update"] = now_str()
+
+    save_db(db)
+    return jsonify({"ok": True})
+
+@app.route("/api/report/scrape_done", methods=["POST"])
+def api_report_scrape_done():
+    data = request.get_json(force=True)
+    username = data.get("username", "").strip()
+    count = int(data.get("count", 1))
+
+    if not username:
+        return jsonify({"ok": False, "error": "username missing"}), 400
+
+    db = load_db()
+    report = get_user_report(db, username)
+
+    report["scraped_done"] += count
+    report["last_update"] = now_str()
+
+    save_db(db)
+    return jsonify({"ok": True})
+
+@app.route("/api/report/download_done", methods=["POST"])
+def api_report_download_done():
+    data = request.get_json(force=True)
+    username = data.get("username", "").strip()
+    count = int(data.get("count", 1))
+
+    if not username:
+        return jsonify({"ok": False, "error": "username missing"}), 400
+
+    db = load_db()
+    report = get_user_report(db, username)
+
+    report["download_done"] += count
+    report["last_update"] = now_str()
+
+    save_db(db)
+    return jsonify({"ok": True})
+
+@app.route("/api/report/session", methods=["POST"])
+def api_report_session():
+    data = request.get_json(force=True)
+    username = data.get("username", "").strip()
+    seconds = int(data.get("seconds", 0))
+
+    if not username:
+        return jsonify({"ok": False, "error": "username missing"}), 400
+
+    db = load_db()
+    report = get_user_report(db, username)
+
+    report["session_seconds"] = seconds
+    report["last_update"] = now_str()
+
+    save_db(db)
+    return jsonify({"ok": True})
 
 # ---------------- ADMIN PANEL ----------------
 @app.route("/")
@@ -184,6 +347,18 @@ def enable_device(device_id):
         d["disabled"] = False
     save_db(db)
     return redirect(url_for("home"))
+
+@app.route("/admin/work/excel")
+def download_work_excel():
+    if not session.get("admin"):
+        return redirect(url_for("admin_login"))
+
+    # Force generate if missing
+    if not os.path.exists(EXCEL_FILE):
+        db = load_db()
+        export_work_excel(db)
+
+    return send_file(EXCEL_FILE, as_attachment=True)
 
 # health check for Render
 @app.route("/health")
