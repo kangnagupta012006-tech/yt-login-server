@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import time
 import hashlib
@@ -58,7 +58,8 @@ def find_device(db, device_id):
             return d
     return None
 
-# ---------------- API: CLIENT LOGIN ----------------
+# ---------------- API SECTION ----------------
+
 @app.route("/api/login", methods=["POST"])
 def api_login():
     data = request.get_json(force=True)
@@ -118,6 +119,16 @@ def api_login():
 
     save_db(db)
     return jsonify({"ok": True, "max_devices": MAX_DEVICES})
+
+# --- NEW ADDED CODE START ---
+@app.route("/api/ping", methods=["GET"])
+def api_ping():
+    return jsonify({
+        "ok": True,
+        "message": "pong",
+        "time": now_str()
+    }), 200
+# --- NEW ADDED CODE END ---
 
 # ---------------- ADMIN PANEL ----------------
 @app.route("/")
