@@ -13,15 +13,15 @@ app.secret_key = os.environ.get("SECRET_KEY", "CHANGE_THIS_SECRET")
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin123")
 
-# --- DEBUGGING CREDENTIALS ---
+# --- DEBUGGING CREDENTIALS (SECURED) ---
 print("DEBUG ADMIN_USER:", repr(ADMIN_USER))
-print("DEBUG ADMIN_PASS:", repr(ADMIN_PASS))
+print("DEBUG ADMIN_PASS: [HIDDEN]")  # ✅ Security Fix: Password not printed
 # -----------------------------
 
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
 SHEET_NAME = os.environ.get("SHEET_NAME", "work_report").strip()
 
-# (This variable is less critical now that we hardcoded tabs, but keeping it for safety)
+# (Keeping this config for reference, though tabs are hardcoded below)
 TAB_NAME = os.environ.get("TAB_NAME", "devices").strip()
 
 # ---------------- HELPERS ----------------
@@ -31,7 +31,9 @@ def now_str():
 def check_admin(username, password):
     return username.strip() == ADMIN_USER.strip() and password.strip() == ADMIN_PASS.strip()
 
+# ✅ IMPROVEMENT #2: Robust IP Helper
 def get_ip():
+    # Handle Render/Proxy headers where multiple IPs might be present
     ip = request.headers.get("X-Forwarded-For", "")
     if ip:
         return ip.split(",")[0].strip()
@@ -66,7 +68,8 @@ def sheet_post(payload: dict):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-# ✅ CHANGE #2: Added "tab": "work_report" to ensure reports go to the correct tab
+# ---------------- LOGIC FUNCTIONS ----------------
+
 def push_to_work_report(row: dict):
     payload = {
         "sheet": SHEET_NAME,
@@ -82,12 +85,9 @@ def push_to_work_report(row: dict):
     }
     return sheet_post(payload)
 
-# ---------------- LOGIC FUNCTIONS ----------------
-
-# ✅ CHANGE #1: Hardcoded "tab": "devices" to ensure registration goes to devices tab
 def register_or_update_device(device_id, device_name, ip, username):
     payload = {
-        "sheet": SHEET_NAME,        # optional depending on script logic, but good to keep
+        "sheet": SHEET_NAME,        # optional depending on script logic
         "tab": "devices",           # 🔥 HARDCODED: Forces script to use devices tab
         "event": "device_check",    # 🔥 MUST MATCH SCRIPT logic
         "device_id": device_id,
@@ -108,7 +108,9 @@ def login():
         password = body.get("password", "")
         device_id = body.get("device_id", "")
         device_name = body.get("device_name", "")
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        
+        # ✅ FIX: Use the robust helper instead of manual header extraction
+        ip = get_ip()
 
         if username.strip() != ADMIN_USER.strip() or password.strip() != ADMIN_PASS.strip():
             return jsonify({"ok": False, "error": "Invalid credentials"}), 401
