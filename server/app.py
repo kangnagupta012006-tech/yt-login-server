@@ -15,7 +15,9 @@ ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin123")
 
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
 SHEET_NAME = os.environ.get("SHEET_NAME", "work_report").strip()
-TAB_NAME = os.environ.get("TAB_NAME", "devices").strip() # Added as per Change 2
+
+# STEP 1: TAB_NAME variable added
+TAB_NAME = os.environ.get("TAB_NAME", "devices").strip()
 
 # ---------------- HELPERS ----------------
 def now_str():
@@ -47,18 +49,15 @@ def extract_youtube_links(items):
     return unique
 
 # ---------------- API HELPER ----------------
-# Change 3: Using existing helper, but added JSON parsing 
-# to ensure the Login logic in Change 6 works correctly.
+# STEP 2: sheet_post updated to return JSON correctly
 def sheet_post(payload: dict):
     if not GOOGLE_SCRIPT_URL:
         return {"ok": False, "error": "GOOGLE_SCRIPT_URL missing"}
     try:
         r = requests.post(GOOGLE_SCRIPT_URL, json=payload, timeout=12)
-        # Try to return parsed JSON from the script
         try:
-            return r.json() 
+            return r.json()
         except:
-            # Fallback if script returns raw string or error
             return {"ok": r.status_code == 200, "status": r.status_code, "text": r.text[:200]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -78,12 +77,12 @@ def push_to_work_report(row: dict):
     return sheet_post(payload)
 
 # ---------------- LOGIC FUNCTIONS ----------------
-# Change 4: New function replacing the old wrapper logic
+# STEP 3: register_or_update_device updated with correct payload (event="device_check")
 def register_or_update_device(device_id, device_name, ip, username):
     payload = {
-        "action": "device_check",
-        "sheet": SHEET_NAME,
-        "tab": TAB_NAME,
+        "sheet": SHEET_NAME,      # spreadsheet name (work_report)
+        "tab": TAB_NAME,          # devices
+        "event": "device_check",  # Important: matches Script logic
         "device_id": device_id,
         "device_name": device_name,
         "ip": ip,
@@ -110,21 +109,21 @@ def login():
         if not device_id:
             return jsonify({"ok": False, "error": "Device ID missing"}), 400
 
-        # Change 5: Call new function
         result = register_or_update_device(device_id, device_name, ip, username)
 
-        # Change 6: New Response Logic
+        # STEP 4: Login logic fixed to handle nested "data" in response
         if not result.get("ok"):
             return jsonify({"ok": False, "error": "Sheet API failed", "details": result}), 500
 
         data = result.get("data", {})
-        # If script returns direct JSON, sometimes result itself will contain keys
+        
+        # Fallback if script returns flat JSON (rare, but safety check)
         if not data:
             data = result
-        
+
         if data.get("exists") is False:
             return jsonify({"ok": False, "error": "Device approval pending. Ask admin to set disabled=FALSE in sheet."}), 403
-        
+
         if data.get("disabled") is True:
             return jsonify({"ok": False, "error": "Device disabled by admin."}), 403
 
