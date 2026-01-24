@@ -14,7 +14,6 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin123")
 
 # --- DEBUGGING CREDENTIALS ---
-# Added as per instructions to check actual values in logs
 print("DEBUG ADMIN_USER:", repr(ADMIN_USER))
 print("DEBUG ADMIN_PASS:", repr(ADMIN_PASS))
 # -----------------------------
@@ -22,7 +21,7 @@ print("DEBUG ADMIN_PASS:", repr(ADMIN_PASS))
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
 SHEET_NAME = os.environ.get("SHEET_NAME", "work_report").strip()
 
-# STEP 1: TAB_NAME variable added
+# (This variable is less critical now that we hardcoded tabs, but keeping it for safety)
 TAB_NAME = os.environ.get("TAB_NAME", "devices").strip()
 
 # ---------------- HELPERS ----------------
@@ -30,8 +29,6 @@ def now_str():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def check_admin(username, password):
-    # Strip whitespace just in case user inputs have it, 
-    # but strictly compare against the ENV vars printed above.
     return username.strip() == ADMIN_USER.strip() and password.strip() == ADMIN_PASS.strip()
 
 def get_ip():
@@ -57,7 +54,6 @@ def extract_youtube_links(items):
     return unique
 
 # ---------------- API HELPER ----------------
-# STEP 2: sheet_post updated to return JSON correctly
 def sheet_post(payload: dict):
     if not GOOGLE_SCRIPT_URL:
         return {"ok": False, "error": "GOOGLE_SCRIPT_URL missing"}
@@ -70,9 +66,11 @@ def sheet_post(payload: dict):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+# ✅ CHANGE #2: Added "tab": "work_report" to ensure reports go to the correct tab
 def push_to_work_report(row: dict):
     payload = {
         "sheet": SHEET_NAME,
+        "tab": "work_report",   # 🔥 HARDCODED: Forces script to use work_report tab
         "time": row.get("time", ""),
         "username": row.get("username", ""),
         "device_id": row.get("device_id", ""),
@@ -85,12 +83,13 @@ def push_to_work_report(row: dict):
     return sheet_post(payload)
 
 # ---------------- LOGIC FUNCTIONS ----------------
-# STEP 3: register_or_update_device updated with correct payload (event="device_check")
+
+# ✅ CHANGE #1: Hardcoded "tab": "devices" to ensure registration goes to devices tab
 def register_or_update_device(device_id, device_name, ip, username):
     payload = {
-        "sheet": SHEET_NAME,      # spreadsheet name (work_report)
-        "tab": TAB_NAME,          # devices
-        "event": "device_check",  # Important: matches Script logic
+        "sheet": SHEET_NAME,        # optional depending on script logic, but good to keep
+        "tab": "devices",           # 🔥 HARDCODED: Forces script to use devices tab
+        "event": "device_check",    # 🔥 MUST MATCH SCRIPT logic
         "device_id": device_id,
         "device_name": device_name,
         "ip": ip,
@@ -111,7 +110,6 @@ def login():
         device_name = body.get("device_name", "")
         ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
-        # Added .strip() here as well to ensure safety
         if username.strip() != ADMIN_USER.strip() or password.strip() != ADMIN_PASS.strip():
             return jsonify({"ok": False, "error": "Invalid credentials"}), 401
 
@@ -120,13 +118,12 @@ def login():
 
         result = register_or_update_device(device_id, device_name, ip, username)
 
-        # STEP 4: Login logic fixed to handle nested "data" in response
         if not result.get("ok"):
             return jsonify({"ok": False, "error": "Sheet API failed", "details": result}), 500
 
         data = result.get("data", {})
         
-        # Fallback if script returns flat JSON (rare, but safety check)
+        # Fallback if script returns flat JSON
         if not data:
             data = result
 
