@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, redirect, url_for, session
 
-# --- NEW IMPORTS FOR DIRECT SHEET ACCESS ---
+# --- GOOGLE SHEETS IMPORTS ---
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -17,14 +17,12 @@ app.secret_key = os.environ.get("SECRET_KEY", "CHANGE_THIS_SECRET")
 # ---------------- CONFIG ----------------
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin123")
-# REMOVED: MAX_DEVICES logic
 
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
 SHEET_NAME = os.environ.get("SHEET_NAME", "work_report").strip()
 CREDENTIALS_FILE = os.environ.get("CREDENTIALS_FILE", "credentials.json")
 
 # ---------------- SHEET API WRAPPER ----------------
-# This class wraps gspread to match the function calls in your instructions
 class SheetAPIWrapper:
     def __init__(self, creds_file):
         self.client = None
@@ -51,18 +49,13 @@ class SheetAPIWrapper:
         if not self.client: raise Exception("Google Sheet Client not initialized")
         sh = self.client.open(sheet_name)
         wks = sh.worksheet(tab_name)
-        # Update the entire row range
         wks.update(range_name=f"A{row_num}", values=[row_data])
 
-# Initialize the API
 sheet_api = SheetAPIWrapper(CREDENTIALS_FILE)
 
 # ---------------- HELPERS ----------------
 def now_str():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-
-def hash_pw(pw: str):
-    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
 
 def check_admin(username, password):
     return username == ADMIN_USER and password == ADMIN_PASS
@@ -89,11 +82,9 @@ def extract_youtube_links(items):
             unique.append(l)
     return unique
 
-# ---------------- NEW LOGIC FUNCTIONS (FROM INSTRUCTION) ----------------
-
+# ---------------- LOGIC FUNCTIONS ----------------
 def find_device_row(devices_rows, device_id):
     for i, row in enumerate(devices_rows):
-        # Check if row has data and match device_id (Column A is usually index 0)
         if len(row) > 0 and str(row[0]).strip() == str(device_id).strip():
             return i
     return -1
@@ -106,40 +97,27 @@ def is_disabled(value):
 
 def register_or_update_device(sheet_api, sheet_name, device_id, device_name, ip, username):
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-
     devices_tab = "devices"
-    rows = sheet_api.get_sheet_rows(sheet_name, devices_tab)  # headers + data
+    rows = sheet_api.get_sheet_rows(sheet_name, devices_tab)
 
     if not rows or len(rows) < 1:
         raise Exception("devices sheet empty or headers missing")
 
     headers = rows[0]
     data_rows = rows[1:]
-
     idx = find_device_row(data_rows, device_id)
 
     if idx == -1:
-        # NEW DEVICE -> add pending (disabled TRUE)
+        # NEW DEVICE
         new_row = [
-            device_id,            # device_id
-            device_name,          # device_name
-            ip,                   # ip
-            now,                  # created
-            now,                  # last_seen
-            "Pending",            # status
-            "TRUE",               # disabled
-            username              # username
+            device_id, device_name, ip, now, now,
+            "Pending", "TRUE", username
         ]
         sheet_api.append_row(sheet_name, devices_tab, new_row)
         return {"exists": False, "disabled": True, "status": "Pending"}
 
-    # EXISTING -> update last_seen/ip/name/username
+    # EXISTING
     row = data_rows[idx]
-
-    # Column mapping based on your sheet:
-    # A device_id, B device_name, C ip, D created, E last_seen, F status, G disabled, H username
-    
-    # Ensure row length to avoid index errors
     while len(row) < 8:
         row.append("")
 
@@ -148,24 +126,15 @@ def register_or_update_device(sheet_api, sheet_name, device_id, device_name, ip,
     row[4] = now
     row[7] = username
 
-    disabled_val = row[6]
-    disabled_flag = is_disabled(disabled_val)
+    disabled_flag = is_disabled(row[6])
+    row[5] = "Disabled" if disabled_flag else "Active"
 
-    if disabled_flag:
-        row[5] = "Disabled"
-    else:
-        row[5] = "Active"
-
-    # write back updated row (1 header row + index + 1 for 1-based indexing)
-    # The snippet said `idx + 2`. idx is from data_rows (starts at actual row 2).
-    # If idx is 0, it is row 2 in Excel.
     sheet_row_number = idx + 2
     sheet_api.update_row(sheet_name, devices_tab, sheet_row_number, row)
 
     return {"exists": True, "disabled": disabled_flag, "status": row[5]}
 
-# ---------------- OLD SHEET API (FOR REPORTING ONLY) ----------------
-# We keep this for the reporting functions as they use the Webhook URL
+# ---------------- OLD API (REPORTING) ----------------
 def sheet_post(payload: dict):
     if not GOOGLE_SCRIPT_URL:
         return {"ok": False, "error": "GOOGLE_SCRIPT_URL missing"}
@@ -189,51 +158,37 @@ def push_to_work_report(row: dict):
     }
     return sheet_post(payload)
 
-# ---------------- UPDATED LOGIN ROUTE ----------------
+# ---------------- ROUTES ----------------
+
 @app.route("/login", methods=["POST"])
 def login():
     try:
         body = request.get_json(force=True) or {}
-
         username = body.get("username", "")
         password = body.get("password", "")
         device_id = body.get("device_id", "")
         device_name = body.get("device_name", "")
         ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
-        # 1. Admin Auth
         if username != ADMIN_USER or password != ADMIN_PASS:
             return jsonify({"ok": False, "error": "Invalid credentials"}), 401
 
         if not device_id:
             return jsonify({"ok": False, "error": "Device ID missing"}), 400
 
-        # 2. Register/Update device in sheet (Checks sheet directly)
         result = register_or_update_device(sheet_api, SHEET_NAME, device_id, device_name, ip, username)
 
-        # 3. Handle Logic
-        # New device -> Pending -> Reject
         if result["exists"] is False:
-            return jsonify({
-                "ok": False,
-                "error": "Device approval pending. Ask admin to set disabled=FALSE in sheet."
-            }), 403
+            return jsonify({"ok": False, "error": "Device approval pending. Ask admin to set disabled=FALSE in sheet."}), 403
 
-        # Disabled -> Reject
         if result["disabled"] is True:
-            return jsonify({
-                "ok": False,
-                "error": "Device disabled by admin."
-            }), 403
+            return jsonify({"ok": False, "error": "Device disabled by admin."}), 403
 
-        # Allow login
         return jsonify({"ok": True, "status": result["status"]})
 
     except Exception as e:
-        print(f"Login Error: {e}")
         return jsonify({"ok": False, "error": f"Server Error: {str(e)}"}), 500
 
-# Backward compatibility (optional, or remove if not needed)
 @app.route("/api/login", methods=["POST"])
 def api_login_old():
     return login()
@@ -242,83 +197,55 @@ def api_login_old():
 def api_ping():
     return jsonify({"ok": True, "message": "pong", "time": now_str()}), 200
 
-# ---------------- API: REPORTING (Unchanged) ----------------
+# --- REPORTING ROUTES ---
 @app.route("/api/report/paste_links", methods=["POST"])
 def report_paste_links():
     data = request.get_json(force=True) or {}
     items = data.get("items", [])
     yt_links = extract_youtube_links(items)
-
     row = {
-        "time": now_str(),
-        "username": data.get("username", ""),
-        "device_id": data.get("device_id", ""),
-        "device_name": data.get("device_name", ""),
-        "ip": get_ip(),
-        "event": "paste_links",
-        "count": len(yt_links),
-        "details": "\n".join(yt_links[:20])
+        "time": now_str(), "username": data.get("username", ""), "device_id": data.get("device_id", ""),
+        "device_name": data.get("device_name", ""), "ip": get_ip(), "event": "paste_links",
+        "count": len(yt_links), "details": "\n".join(yt_links[:20])
     }
-    result = push_to_work_report(row)
-    return jsonify({"ok": True, "saved_links": len(yt_links), "sheet_result": result})
+    return jsonify({"ok": True, "saved_links": len(yt_links), "sheet_result": push_to_work_report(row)})
 
 @app.route("/api/report/scrape_done", methods=["POST"])
 def report_scrape_done():
     data = request.get_json(force=True) or {}
     row = {
-        "time": now_str(),
-        "username": data.get("username", ""),
-        "device_id": data.get("device_id", ""),
-        "device_name": data.get("device_name", ""),
-        "ip": get_ip(),
-        "event": "scrape_done",
-        "count": int(data.get("count", 0)),
-        "details": ""
+        "time": now_str(), "username": data.get("username", ""), "device_id": data.get("device_id", ""),
+        "device_name": data.get("device_name", ""), "ip": get_ip(), "event": "scrape_done",
+        "count": int(data.get("count", 0)), "details": ""
     }
-    result = push_to_work_report(row)
-    return jsonify({"ok": True, "sheet_result": result})
+    return jsonify({"ok": True, "sheet_result": push_to_work_report(row)})
 
 @app.route("/api/report/download_done", methods=["POST"])
 def report_download_done():
     data = request.get_json(force=True) or {}
     row = {
-        "time": now_str(),
-        "username": data.get("username", ""),
-        "device_id": data.get("device_id", ""),
-        "device_name": data.get("device_name", ""),
-        "ip": get_ip(),
-        "event": "download_done",
-        "count": int(data.get("count", 0)),
-        "details": ""
+        "time": now_str(), "username": data.get("username", ""), "device_id": data.get("device_id", ""),
+        "device_name": data.get("device_name", ""), "ip": get_ip(), "event": "download_done",
+        "count": int(data.get("count", 0)), "details": ""
     }
-    result = push_to_work_report(row)
-    return jsonify({"ok": True, "sheet_result": result})
+    return jsonify({"ok": True, "sheet_result": push_to_work_report(row)})
 
 @app.route("/api/report/session", methods=["POST"])
 def report_session():
     data = request.get_json(force=True) or {}
     row = {
-        "time": now_str(),
-        "username": data.get("username", ""),
-        "device_id": data.get("device_id", ""),
-        "device_name": data.get("device_name", ""),
-        "ip": get_ip(),
-        "event": "session",
-        "count": int(data.get("seconds", 0)),
-        "details": ""
+        "time": now_str(), "username": data.get("username", ""), "device_id": data.get("device_id", ""),
+        "device_name": data.get("device_name", ""), "ip": get_ip(), "event": "session",
+        "count": int(data.get("seconds", 0)), "details": ""
     }
-    result = push_to_work_report(row)
-    return jsonify({"ok": True, "sheet_result": result})
+    return jsonify({"ok": True, "sheet_result": push_to_work_report(row)})
 
-# ---------------- SIMPLE ADMIN PANEL (Without Cache) ----------------
-# Since we removed the memory cache, we can't easily show a live dashboard 
-# without reading the sheet every time. For now, simple home.
+# ---------------- ADMIN PANEL ----------------
 @app.route("/")
 def home():
     if not session.get("admin"):
         return redirect(url_for("admin_login"))
-    
-    # Optional: You could read `sheet_api.get_sheet_rows` here to show devices
+    # Dashboard is now read-only regarding device status management
     return "Admin Panel - Please use Google Sheet to manage devices."
 
 @app.route("/admin/login", methods=["GET", "POST"])
@@ -336,6 +263,21 @@ def admin_login():
 def admin_logout():
     session.clear()
     return redirect(url_for("admin_login"))
+
+# ---------------- MODIFIED / REMOVED ENDPOINTS ----------------
+# As per instructions, these are now safely disabled.
+
+@app.route("/admin/device/remove/<device_id>", methods=["POST", "GET"])
+def remove_device(device_id):
+    return "Remove from dashboard is OFF. Use Google Sheet.", 403
+
+@app.route("/admin/device/disable/<device_id>", methods=["POST", "GET"])
+def disable_device(device_id):
+    return "Disabled from dashboard is OFF. Use Google Sheet.", 403
+
+@app.route("/admin/device/enable/<device_id>", methods=["POST", "GET"])
+def enable_device(device_id):
+    return "Enable from dashboard is OFF. Use Google Sheet.", 403
 
 @app.route("/health")
 def health():
