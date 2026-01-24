@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -27,6 +27,11 @@
 
 <div class="card">
   <h2>Active Devices (Max {{max_devices}})</h2>
+  
+  <p style="color:#ffcc00;font-weight:bold;margin-top:0;">
+    ⚠️ Device enable/disable Google Sheet se control hota hai (disabled TRUE/FALSE)
+  </p>
+
   <table>
     <tr>
       <th>ID</th>
@@ -36,7 +41,7 @@
       <th>Created</th>
       <th>Last Seen</th>
       <th>Status</th>
-      <th>Action</th>
+      <th>Control</th>
     </tr>
 
     {% for d in devices %}
@@ -48,21 +53,8 @@
       <td>{{d.created}}</td>
       <td>{{d.last_seen}}</td>
       <td>{% if d.disabled %}DISABLED{% else %}ACTIVE{% endif %}</td>
-      <td style="display:flex;gap:8px;">
-        {% if d.disabled %}
-        <form method="post" action="/admin/device/enable/{{d.device_id}}">
-          <button class="btn ok">Enable</button>
-        </form>
-        {% else %}
-        <form method="post" action="/admin/device/disable/{{d.device_id}}">
-          <button class="btn warn">Disable</button>
-        </form>
-        {% endif %}
-
-        <form method="post" action="/admin/device/remove/{{d.device_id}}">
-          <button class="btn danger">Remove</button>
-        </form>
-      </td>
+      
+      <td style="color:#999;">Sheet Control</td>
     </tr>
     {% endfor %}
   </table>
